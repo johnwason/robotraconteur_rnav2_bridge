@@ -5,12 +5,12 @@ set -euo pipefail
 source "$(dirname "$0")/config.sh"
 
 TTY=()
+# Same as RO_SOURCE_MOUNTS, but src/ is read-write.
+DEV_MOUNTS=("${RO_SOURCE_MOUNTS[@]/src:ro,Z/src:rw,Z}")
 [[ -t 0 ]] && TTY=(-it)
 
 exec podman run --rm "${TTY[@]}" --name "$DEV_NAME" \
-    "${HARDENED_RUN_FLAGS[@]}" \
+    "${HARDENED_RUN_FLAGS[@]}" "${RR_NET_FLAGS[@]}" \
     --userns=keep-id \
-    -v "$PROJECT_ROOT/src:/opt/rr_nav2/src:rw,Z" \
-    -v "$PROJECT_ROOT/robdef:/opt/rr_nav2/robdef:ro,Z" \
-    -v "$PROJECT_ROOT/config:/opt/rr_nav2/config:ro,Z" \
+    "${DEV_MOUNTS[@]}" \
     "$IMAGE" "$@"

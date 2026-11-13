@@ -48,9 +48,22 @@ HARDENED_RUN_FLAGS=(
     "--memory-swap=$LIMIT_MEMORY"
     "--cpus=$LIMIT_CPUS"
     "--pids-limit=$LIMIT_PIDS"
+)
+
+# Network flags for containers that serve RR: only the RR port, loopback by default.
+RR_NET_FLAGS=(
     --network=bridge
     -p "$RR_BIND_ADDR:$RR_PORT:$RR_PORT"
     -e "RR_NAV2_PORT=$RR_PORT"
+)
+
+# Read-only mounts of the project's runtime dirs (overlay the baked-in copies).
+RO_SOURCE_MOUNTS=(
+    -v "$PROJECT_ROOT/src:/opt/rr_nav2/src:ro,Z"
+    -v "$PROJECT_ROOT/robdef:/opt/rr_nav2/robdef:ro,Z"
+    -v "$PROJECT_ROOT/config:/opt/rr_nav2/config:ro,Z"
+    -v "$PROJECT_ROOT/launch:/opt/rr_nav2/launch:ro,Z"
+    -v "$PROJECT_ROOT/scripts/container:/opt/rr_nav2/bin:ro,Z"
 )
 
 # podman build has no --pids-limit; wrap it in a systemd user scope so the

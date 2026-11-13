@@ -9,5 +9,5 @@ DETACH=()
 [[ "${RR_NAV2_DETACH:-}" == "1" ]] && DETACH=(-d)
 
 exec podman run --rm "${DETACH[@]}" --name "$NAME" \
-    "${HARDENED_RUN_FLAGS[@]}" \
+    "${HARDENED_RUN_FLAGS[@]}" "${RR_NET_FLAGS[@]}" \
     "$IMAGE" "$@"
