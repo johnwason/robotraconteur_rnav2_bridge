@@ -1,0 +1,22 @@
+# Host Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Logs and runtime output
+*.log
+logs/
+log/
+
+# Generated certs / secrets (never commit)
+certs/
+*.pem
+*.key
+*.p12
+
+# Local overrides
+*.local
+*.local.*
+.env
+scripts/local.env
