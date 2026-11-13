@@ -43,6 +43,11 @@ MAP_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL, history=HistoryPolicy.KEEP_LAST)
 SENSOR_QOS = QoSProfile(depth=5, reliability=ReliabilityPolicy.RELIABLE,
                         durability=DurabilityPolicy.VOLATILE, history=HistoryPolicy.KEEP_LAST)
+# The client's odometry rate and jitter are unknown, so odom->base_link is re-published at
+# 50 Hz from the latest sample, future-dated by ODOM_TF_LEAD; map->odom by MAP_TF_LEAD.
+ODOM_TF_LEAD = 0.05
+MAP_TF_LEAD = 0.1
+
 LATEST_QOS = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                         durability=DurabilityPolicy.VOLATILE, history=HistoryPolicy.KEEP_LAST)
 
@@ -94,6 +99,12 @@ def pose_stamped(frame: str, x: float, y: float, yaw: float, stamp=None) -> Pose
 def pose_of(ps) -> tuple:
     p, q = ps.pose.position, ps.pose.orientation
     return float(p.x), float(p.y), quat_to_yaw(q.x, q.y, q.z, q.w)
+
+
+def pose_of_msg(p) -> tuple:
+    """geometry_msgs/Pose -> (x, y, yaw)"""
+    q = p.orientation
+    return float(p.position.x), float(p.position.y), quat_to_yaw(q.x, q.y, q.z, q.w)
 
 
 def path_poses(path: Path) -> list:
@@ -173,7 +184,7 @@ class RosSide:
                                      "/local_costmap/clear_entirely_local_costmap",
                                      callback_group=self.cb),
         }
-        n.create_timer(0.05, self._tick_tf, callback_group=self.cb)
+        n.create_timer(0.02, self._tick_tf, callback_group=self.cb)
         self.set_laser_mount(0.0, 0.0, 0.0)
 
     # ------------------------------------------------------------------ lifecycle
@@ -213,12 +224,9 @@ class RosSide:
         return fut.result()
 
     def _sensor_stamp(self):
-        """Stamp sensor data with the latest odometry time so TF lookups never need to
-        extrapolate into the future (data is stamped on arrival, not by the client)."""
-        with self._lock:
-            st = self.last_odom_stamp
-            fresh = (time.monotonic() - self.last_odom_wall) < 0.5
-        return st.to_msg() if (st is not None and fresh) else self.now().to_msg()
+        """Sensor data is stamped on arrival with the service clock (never the client's).
+        TF is future-dated (see ODOM_TF_LEAD) so lookups at this time always succeed."""
+        return self.now().to_msg()
 
     def _tf(self, parent, child, x, y, yaw, stamp) -> TransformStamped:
         t = TransformStamped()
@@ -244,11 +252,13 @@ class RosSide:
         m.twist.twist.linear.x, m.twist.twist.linear.y = float(vx), float(vy)
         m.twist.twist.angular.z = float(wz)
         with self._lock:
+            first = self.odom_pose is None
             self.odom_pose = (float(x), float(y), float(yaw))
             self.last_odom_stamp = now
             self.last_odom_wall = time.monotonic()
         self.odom_pub.publish(m)
-        self.tf_pub.sendTransform(self._tf("odom", "base_link", x, y, yaw, stamp))
+        if first:
+            self._tick_tf()
 
     def publish_scan(self, angle_min, angle_max, angle_increment, time_increment, scan_time,
                      range_min, range_max, ranges, intensities):
@@ -322,10 +332,19 @@ class RosSide:
 
     def _tick_tf(self):
         with self._lock:
+            odom = self.odom_pose
+            fresh = (time.monotonic() - self.last_odom_wall) < 1.0
             mo = self.map_to_odom if self.publish_map_to_odom else None
+        now = self.now()
+        tfs = []
+        # Stop extending odom TF when odometry stops, so Nav2 sees the data go stale too.
+        if odom is not None and fresh:
+            tfs.append(self._tf("odom", "base_link", *odom,
+                                (now + Duration(seconds=ODOM_TF_LEAD)).to_msg()))
         if mo is not None:
-            stamp = (self.now() + Duration(seconds=0.1)).to_msg()  # future-dated like AMCL
-            self.tf_pub.sendTransform(self._tf("map", "odom", *mo, stamp))
+            tfs.append(self._tf("map", "odom", *mo, (now + Duration(seconds=MAP_TF_LEAD)).to_msg()))
+        if tfs:
+            self.tf_pub.sendTransform(tfs)
 
     def input_ages(self) -> dict:
         now = time.monotonic()
@@ -363,11 +382,23 @@ class RosSide:
             self.costmaps[which] = m
         self._notify(f"{which}_costmap", m)
 
+    def lookup_2d(self, parent: str, child: str):
+        """Latest (x, y, yaw) of child in parent, or None."""
+        try:
+            t = self.tf_buffer.lookup_transform(parent, child, Time())
+        except Exception:
+            return None
+        tr, q = t.transform.translation, t.transform.rotation
+        return float(tr.x), float(tr.y), quat_to_yaw(q.x, q.y, q.z, q.w)
+
     def robot_pose(self):
-        """(x, y, yaw) of base_link in map, or None."""
+        """(x, y, yaw) of base_link in map, or None (also None if TF is > 1 s stale)."""
         try:
             t = self.tf_buffer.lookup_transform("map", "base_link", Time())
         except Exception:
+            return None
+        age = (self.now() - Time.from_msg(t.header.stamp)).nanoseconds * 1e-9
+        if age > 1.0:
             return None
         tr, q = t.transform.translation, t.transform.rotation
         return float(tr.x), float(tr.y), quat_to_yaw(q.x, q.y, q.z, q.w)
