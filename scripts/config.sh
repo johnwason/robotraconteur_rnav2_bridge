@@ -67,6 +67,7 @@ RO_SOURCE_MOUNTS=(
     -v "$PROJECT_ROOT/config:/opt/rr_nav2/config:ro,Z"
     -v "$PROJECT_ROOT/launch:/opt/rr_nav2/launch:ro,Z"
     -v "$PROJECT_ROOT/scripts/container:/opt/rr_nav2/bin:ro,Z"
+    -v "$PROJECT_ROOT/tests:/opt/rr_nav2/tests:ro,Z"
 )
 
 # podman build has no --pids-limit; wrap it in a systemd user scope so the
