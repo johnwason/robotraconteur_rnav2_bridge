@@ -256,13 +256,17 @@ class _TaskGenerator:
                 result = task.outcome()
             except T.TaskFailed as e:
                 self._nav._tasks.finished(task, "failed")
+                self._nav._set_message(str(e))
                 self._closed = True
                 raise RR.OperationFailedException(str(e))
             except T.TaskAborted as e:
                 self._nav._tasks.finished(task, "cancelled")
+                if not task.cancel_reason or not task.cancel_reason.startswith("watchdog"):
+                    self._nav._set_message(str(e))
                 self._closed = True
                 raise RR.OperationAbortedException(str(e))
             self._nav._tasks.finished(task, "complete")
+            self._nav._set_message(f"{task.name} complete")
             self._final_sent = True
             return self._item(True, result)
         return self._item(False, None)
@@ -512,11 +516,17 @@ class Nav2Navigator:
             check_pose(*p, what=what)
         return out
 
+    def _set_message(self, msg):
+        with self._core.lock:
+            self._core.message = msg
+
     def _start_task(self, name, goal, gen_cls):
         try:
             task = self._tasks.start(name, goal)
         except TaskFailed as e:
+            self._set_message(str(e))
             raise RR.OperationFailedException(str(e))
+        self._set_message(f"running {name}")
         return gen_cls(self, task)
 
     # ---------------------------------------------------------------- navigation generators
@@ -618,6 +628,8 @@ class Nav2Navigator:
     # ---------------------------------------------------------------- misc
     @rr_errors
     def cancel_all(self):
+        if self._tasks.running() is not None:
+            self._set_message("all tasks cancelled by cancel_all()")
         self._tasks.cancel_all("cancel_all() called")
 
     @rr_errors
