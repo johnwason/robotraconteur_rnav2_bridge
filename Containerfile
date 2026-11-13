@@ -45,6 +45,9 @@ COPY --chown=root:root --chmod=0755 scripts/container/ /opt/rr_nav2/bin/
 ENV ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
     ROS_DOMAIN_ID=42 \
     RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
+    FASTRTPS_DEFAULT_PROFILES_FILE=/opt/rr_nav2/config/fastdds.xml \
+    XDG_RUNTIME_DIR=/tmp/xdg \
+    RR_NAV2_RUNTIME_DIR=/tmp/rr_nav2 \
     ROS_LOG_DIR=/home/nav/.ros/log \
     PYTHONPATH=/opt/rr_nav2/src \
     PYTHONDONTWRITEBYTECODE=1 \

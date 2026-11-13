@@ -43,6 +43,7 @@ HARDENED_RUN_FLAGS=(
     --tmpfs /tmp:rw,nosuid,nodev,size=1g
     --tmpfs /home/nav/.ros:rw,nosuid,nodev,size=512m,mode=0700,U
     --tmpfs /run:rw,nosuid,nodev,size=64m
+    --tmpfs /home/nav/.local:rw,nosuid,nodev,size=64m,mode=0700,U
     --shm-size=512m
     "--memory=$LIMIT_MEMORY"
     "--memory-swap=$LIMIT_MEMORY"
