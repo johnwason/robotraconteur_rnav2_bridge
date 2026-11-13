@@ -150,7 +150,9 @@ def render_params(cfg: NavConfig, initial_pose=None) -> dict:
 
     vs = p["velocity_smoother"]["ros__parameters"]
     vs["max_velocity"] = [vx, vy, wz]
-    vs["min_velocity"] = [-vrev, -vy, -wz]
+    # The smoother sits after both the controller and the behaviors; it must let backup()
+    # reverse even when the controller may not (max_reverse_velocity limits the controller).
+    vs["min_velocity"] = [-max(vrev, vx), -vy, -wz]
     vs["max_accel"] = [ax, ay, aw]
     vs["max_decel"] = [-ax, -ay, -aw]
 
