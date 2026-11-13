@@ -1,5 +1,5 @@
-"""ROS 2 side of the bridge: one rclpy node spun by a MultiThreadedExecutor on a
-background thread. RR handler threads never spin rclpy; they call the thread-safe
+"""ROS 2 side of the bridge: one rclpy node spun by a SingleThreadedExecutor on a
+background thread (MultiThreadedExecutor cost ~10x the CPU: 109% vs 11% of a core). RR handler threads never spin rclpy; they call the thread-safe
 publish helpers here or wait on rclpy futures with timeouts.
 
 Frames: map -> odom -> base_link -> laser. All ROS names stay inside this module.
@@ -27,7 +27,7 @@ from nav_msgs.msg import Odometry, Path
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
@@ -116,7 +116,7 @@ class RosSide:
         rclpy.init(args=None)
         self.node = Node(node_name)
         self.cb = ReentrantCallbackGroup()
-        self.executor = MultiThreadedExecutor(num_threads=6)
+        self.executor = SingleThreadedExecutor()
         self.executor.add_node(self.node)
         self._thread = threading.Thread(target=self._spin, name="rclpy-executor", daemon=True)
         self._lock = threading.Lock()

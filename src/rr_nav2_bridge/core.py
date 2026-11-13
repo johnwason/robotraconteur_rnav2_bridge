@@ -194,7 +194,7 @@ class Lifecycle:
         return missing
 
     def start(self):
-        if not self._busy.acquire(blocking=False):
+        if not self._busy.acquire(timeout=1.0):
             raise StateError("another start()/pause()/reset() is in progress")
         try:
             state = self.core.state
@@ -245,7 +245,7 @@ class Lifecycle:
             raise RuntimeError(msg) from None
 
     def pause(self):
-        if not self._busy.acquire(blocking=False):
+        if not self._busy.acquire(timeout=1.0):
             raise StateError("another start()/pause()/reset() is in progress")
         try:
             if self.core.state != "active":
@@ -275,8 +275,14 @@ class Lifecycle:
     def _monitor(self):
         while True:
             time.sleep(1.0)
-            if self.core.state in ("active", "paused") and not self.proc.alive():
-                code = self.proc.exit_code()
-                self.cancel_all()
-                self._set("error", f"navigation stack exited unexpectedly (code {code}); "
-                                   f"call reset() then start()")
+            # Skip while start()/pause()/reset() runs: they replace the process themselves.
+            if not self._busy.acquire(blocking=False):
+                continue
+            try:
+                if self.core.state in ("active", "paused") and not self.proc.alive():
+                    code = self.proc.exit_code()
+                    self.cancel_all()
+                    self._set("error", f"navigation stack exited unexpectedly (code {code}); "
+                                       f"call reset() then start()")
+            finally:
+                self._busy.release()
