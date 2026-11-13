@@ -4,6 +4,7 @@ set -euo pipefail
 source "$(dirname "$0")/config.sh"
 
 build_scope podman build \
+    --format docker \
     --label "$PROJECT_LABEL" \
     --build-arg "BASE_IMAGE=$BASE_IMAGE" \
     --security-opt=no-new-privileges \

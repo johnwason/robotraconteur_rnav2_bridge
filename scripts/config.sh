@@ -41,7 +41,7 @@ HARDENED_RUN_FLAGS=(
     --security-opt=no-new-privileges
     --read-only
     --tmpfs /tmp:rw,nosuid,nodev,size=1g
-    --tmpfs /home/nav/.ros:rw,nosuid,nodev,size=512m,uid=1000,gid=1000,mode=0700
+    --tmpfs /home/nav/.ros:rw,nosuid,nodev,size=512m,mode=0700,U
     --tmpfs /run:rw,nosuid,nodev,size=64m
     --shm-size=512m
     "--memory=$LIMIT_MEMORY"
