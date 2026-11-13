@@ -1,0 +1,217 @@
+## Nav2 navigation bridge: 2D mobile-robot path planning and path following as a service.
+##
+## This service runs a complete navigation stack (global planner, local controller,
+## costmaps, recovery behaviors) but NEVER moves a robot by itself. The client owns the
+## robot: it streams the robot's odometry, laser scans and a map IN, and reads velocity
+## commands (cmd_vel) and plans OUT. The client decides whether and how to forward
+## cmd_vel to its motors.
+##
+## Conventions (apply to every member unless stated otherwise):
+##   * Units: meters, radians, seconds, m/s, rad/s. Angles are yaw about +Z, counter-
+##     clockwise positive, range (-pi, pi].
+##   * Robot body frame: +X forward, +Y left, +Z up (REP-103).
+##   * Frames: "map" is the fixed world frame of the map supplied with map.set_map().
+##     "odom" is the client's continuous odometry frame. Goals, plans and robot_pose are
+##     in "map". Odometry is in "odom". Velocities are in the robot body frame.
+##   * Pose2D = (orientation = yaw in rad, position = (x, y) in m).
+##   * SpatialVelocity: only linear.x (forward m/s), linear.y (left m/s, holonomic only)
+##     and angular.z (yaw rate rad/s) are used; all other components must be 0.
+##   * All timestamps produced by the service are UNIX time in seconds (float) taken from
+##     the service's clock. Data sent in is stamped with the service clock on arrival,
+##     so client/service clock skew does not matter.
+##
+## Expected call order:
+##   1. configuration: set robot_radius/footprint, velocity limits, localization_mode
+##      (only allowed while the stack is inactive).
+##   2. map.set_map(grid).
+##   3. Start streaming odometry (wire, >= 10 Hz) and laser_scan_in (pipe, >= 5 Hz).
+##      In localization_mode external, also stream external_pose; in amcl mode call
+##      set_initial_pose() once.
+##   4. start()  -> activates the stack; fails with a clear message if a precondition is
+##      missing.
+##   5. navigate_to_pose(goal) (or another generator); call Next() repeatedly to follow
+##      progress. Meanwhile read cmd_vel and send it to the robot.
+##   6. pause() / reset() / cancel_all() as needed.
+##
+## Choosing a member for an intent:
+##   * "Plan only, do not move":            compute_path_to_pose / compute_path_through_poses
+##   * "Go to a place":                     navigate_to_pose
+##   * "Go via these places, in order":     navigate_through_poses (one continuous plan)
+##   * "Visit each place and stop at each": follow_waypoints
+##   * "Follow this exact path":            follow_path
+##   * "Turn in place / back up / drive straight / pause": spin / backup / drive_on_heading / wait
+##   * "Stop now":                          cancel_all (then read cmd_vel: it becomes zero)
+##
+## Safety: if odometry or laser input goes stale (see configuration.odometry_timeout /
+## sensor_timeout) every active task is aborted, cmd_vel is forced to zero and
+## nav_status.message explains why. Clients must also stop the robot themselves if
+## cmd_vel.stamp stops advancing.
+service experimental.nav2_bridge
+
+stdver 0.10
+
+import com.robotraconteur.geometry
+import com.robotraconteur.laserscan
+import com.robotraconteur.pointcloud
+import com.robotraconteur.action
+
+using com.robotraconteur.geometry.Point2D
+using com.robotraconteur.geometry.Pose2D
+using com.robotraconteur.geometry.SpatialVelocity
+using com.robotraconteur.laserscan.LaserScan
+using com.robotraconteur.pointcloud.PointCloudf
+using com.robotraconteur.action.ActionStatusCode
+
+## Lifecycle state of the navigation stack.
+enum NavStackState
+    ## Not started (initial state, and after reset()). Configuration may be changed.
+    inactive = 0,
+    ## start() is in progress.
+    activating = 1,
+    ## Ready: navigation and planning calls are accepted.
+    active = 2,
+    ## pause() was called: tasks are rejected, configuration still locked; call start() to resume.
+    paused = 3,
+    ## Activation or runtime failure. See NavStatus.message. Call reset() then start().
+    error = 4
+end
+
+## How the robot's pose in the map frame is determined.
+enum LocalizationMode
+    ## The client streams the robot pose in the map frame on the external_pose wire
+    ## (e.g. from its own SLAM, motion capture or simulation). Default.
+    external = 0,
+    ## The service runs AMCL particle-filter localization against the map using
+    ## laser_scan_in. Call set_initial_pose() once after start().
+    amcl = 1
+end
+
+## Local controller (path-following algorithm).
+enum ControllerType
+    ## Model Predictive Path Integral controller. Smooth, robust; more CPU. Default.
+    mppi = 0,
+    ## Dynamic Window Approach controller. Lighter, more conservative.
+    dwb = 1
+end
+
+## Odometry sample from the client's robot (pose and velocity in the "odom" frame).
+struct Odometry2D
+    ## Robot pose (base frame) in the client's odom frame. Must be continuous (no jumps).
+    field Pose2D pose
+    ## Robot body-frame velocity: linear.x, linear.y (holonomic only), angular.z.
+    field SpatialVelocity velocity
+    ## Monotonic sequence number chosen by the client. Optional (0 if unused).
+    field uint64 seqno
+end
+
+## Velocity command produced by the navigation stack for the robot.
+struct CmdVel
+    ## Body-frame velocity to apply: linear.x (m/s), linear.y (m/s, holonomic only),
+    ## angular.z (rad/s). All zero when no task is active.
+    field SpatialVelocity velocity
+    ## Service time (UNIX seconds) when this command was produced. If it stops
+    ## advancing for more than ~0.5 s the client should stop the robot.
+    field double stamp
+    ## True while a task is actively commanding motion; false means "hold still".
+    field bool active
+    ## Increments with every new command.
+    field uint64 seqno
+end
+
+## A path: ordered poses in the "map" frame.
+struct Path2D
+    ## Poses from start to goal; consecutive poses are typically 0.05 m apart.
+    field Pose2D[] poses
+    ## Service time (UNIX seconds) when the path was produced.
+    field double stamp
+    ## Total length along the path in meters.
+    field double length
+end
+
+## Occupancy grid map supplied by the client.
+struct OccupancyGrid
+    ## Cell edge length in meters (e.g. 0.05). Must be > 0.
+    field double resolution
+    ## Number of cells along map X.
+    field uint32 width
+    ## Number of cells along map Y.
+    field uint32 height
+    ## Pose of the outer corner of cell (0,0) in the map frame. Usually orientation 0.
+    field Pose2D origin
+    ## width*height cells, row-major, row 0 at the origin: index = y*width + x.
+    ## Values: 0 = free, 100 = occupied, 1..99 = probability (>= 65 treated as occupied),
+    ## -1 = unknown.
+    field int8[] data
+end
+
+## Metadata of a map or costmap whose cells are exposed through a memory member.
+struct GridInfo
+    ## Cell edge length in meters.
+    field double resolution
+    ## Number of cells along X.
+    field uint32 width
+    ## Number of cells along Y.
+    field uint32 height
+    ## Pose of the outer corner of cell (0,0) in the map frame (for the local costmap
+    ## this moves with the robot).
+    field Pose2D origin
+    ## Service time (UNIX seconds) of the last update.
+    field double stamp
+    ## Increments every time the cells or metadata change. 0 = no data yet.
+    field uint32 version
+end
+
+## Snapshot of the whole service state.
+struct NavStatus
+    ## Lifecycle state of the stack.
+    field NavStackState stack_state
+    ## Name of the running task ("navigate_to_pose", "spin", ...) or "" if idle.
+    field string active_task
+    ## Status of the running or most recently finished task.
+    field ActionStatusCode task_status
+    ## Robot pose in the map frame (valid only if localized is true).
+    field Pose2D robot_pose
+    ## True if a map->robot pose is currently known.
+    field bool localized
+    ## Remaining distance (m) of the current navigation task, or 0.
+    field double distance_remaining
+    ## Estimated remaining time (s) of the current navigation task, or 0.
+    field double estimated_time_remaining
+    ## True if odometry arrived within configuration.odometry_timeout.
+    field bool odometry_ok
+    ## True if laser scans (or point clouds) arrived within configuration.sensor_timeout.
+    field bool sensors_ok
+    ## True once map.set_map() succeeded.
+    field bool map_ok
+    ## Human-readable explanation of the current state, last error or watchdog trip.
+    field string message
+    ## Service time (UNIX seconds) of this status.
+    field double stamp
+end
+
+## Root object. Connect with rr+tcp://<host>:62354?service=nav2
+object Nav2Navigator
+
+    ## INPUT. Stream the robot's odometry here continuously (>= 10 Hz recommended).
+    ## Pose is in the client's odom frame and must not jump. Required before start().
+    ## Rejected (ignored with nav_status.message set) if any value is NaN/Inf.
+    wire Odometry2D odometry [writeonly]
+
+    ## INPUT. Send every 2D laser scan here (>= 5 Hz recommended). Ranges in meters;
+    ## scan_info.angle_min/angle_increment in radians relative to the sensor's +X axis.
+    ## The sensor's mounting pose on the robot is configuration.laser_mount.
+    ## Out-of-range readings may be +Inf or > range_max (treated as free space up to
+    ## range_max). At most 10000 ranges per scan. Required before start().
+    pipe LaserScan laser_scan_in [writeonly]
+
+    ## INPUT (optional). 3D obstacle points already transformed into the robot body
+    ## frame (+X forward, +Z up, origin on the floor below the robot center).
+    ## Points between 0.05 m and 2.0 m height are marked as obstacles.
+    ## At most 200000 points per message.
+    pipe PointCloudf point_cloud_in [writeonly]
+
+    ## INPUT (localization_mode external only). The robot's pose in the map frame,
+    ## streamed continuously (>= 5 Hz). Ignored in amcl mode.
+    wire Pose2D external_pose [writeonly]
+
+end
