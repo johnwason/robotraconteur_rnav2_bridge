@@ -10,7 +10,7 @@
 ##   * Units: meters, radians, seconds, m/s, rad/s. Angles are yaw about +Z, counter-
 ##     clockwise positive, range (-pi, pi].
 ##   * Robot body frame: +X forward, +Y left, +Z up (REP-103).
-##   * Frames: "map" is the fixed world frame of the map supplied with map.set_map().
+##   * Frames: "map" is the fixed world frame of the map supplied with map.load_map().
 ##     "odom" is the client's continuous odometry frame. Goals, plans and robot_pose are
 ##     in "map". Odometry is in "odom". Velocities are in the robot body frame.
 ##   * Pose2D = (orientation = yaw in rad, position = (x, y) in m).
@@ -23,10 +23,10 @@
 ## Expected call order:
 ##   1. configuration: set robot_radius/footprint, velocity limits, localization_mode
 ##      (only allowed while the stack is inactive).
-##   2. map.set_map(grid).
+##   2. map.load_map(grid).
 ##   3. Start streaming odometry (wire, >= 10 Hz) and laser_scan_in (pipe, >= 5 Hz).
 ##      In localization_mode external, also stream external_pose; in amcl mode call
-##      set_initial_pose() once.
+##      initialize_localization() once.
 ##   4. start()  -> activates the stack; fails with a clear message if a precondition is
 ##      missing.
 ##   5. navigate_to_pose(goal) (or another generator); call Next() repeatedly to follow
@@ -82,7 +82,7 @@ enum LocalizationMode
     ## (e.g. from its own SLAM, motion capture or simulation). Default.
     external = 0,
     ## The service runs AMCL particle-filter localization against the map using
-    ## laser_scan_in. Call set_initial_pose() once after start().
+    ## laser_scan_in. Call initialize_localization() once after start().
     amcl = 1
 end
 
@@ -181,12 +181,49 @@ struct NavStatus
     field bool odometry_ok
     ## True if laser scans (or point clouds) arrived within configuration.sensor_timeout.
     field bool sensors_ok
-    ## True once map.set_map() succeeded.
+    ## True once map.load_map() succeeded.
     field bool map_ok
     ## Human-readable explanation of the current state, last error or watchdog trip.
     field string message
     ## Service time (UNIX seconds) of this status.
     field double stamp
+end
+
+## Progress of a navigation task (navigate_*, follow_waypoints, follow_path), returned by
+## each Next() of the generator.
+struct NavigationFeedback
+    ## running while in progress; complete on the final item (then the generator ends).
+    ## Failures are NOT reported here: Next() raises an exception instead.
+    field ActionStatusCode status
+    ## Robot pose in the map frame at the time of this feedback.
+    field Pose2D current_pose
+    ## Remaining distance in meters (navigate_*: to final goal; follow_path: to path end;
+    ## 0 if not reported by the task).
+    field double distance_remaining
+    ## Seconds since the task started.
+    field double navigation_time
+    ## Estimated seconds to completion (0 if unknown).
+    field double estimated_time_remaining
+    ## Number of recovery behaviors run so far (navigate_* only).
+    field int32 number_of_recoveries
+    ## navigate_through_poses: poses remaining; follow_waypoints: index of the waypoint
+    ## currently being approached (0-based); otherwise 0.
+    field int32 waypoint_index
+    ## follow_path only: current forward speed (m/s); otherwise 0.
+    field double speed
+    ## follow_waypoints final item only: indices of waypoints that could not be reached.
+    field int32[] missed_waypoints
+end
+
+## Progress of a simple behavior (spin, backup, drive_on_heading, wait).
+struct BehaviorFeedback
+    ## running while in progress; complete on the final item.
+    field ActionStatusCode status
+    ## spin: radians turned so far (absolute); backup/drive_on_heading: meters traveled;
+    ## wait: seconds remaining.
+    field double progress
+    ## Seconds since the behavior started.
+    field double elapsed_time
 end
 
 ## Root object. Connect with rr+tcp://<host>:62354?service=nav2
@@ -214,4 +251,231 @@ object Nav2Navigator
     ## streamed continuously (>= 5 Hz). Ignored in amcl mode.
     wire Pose2D external_pose [writeonly]
 
+    ## OUTPUT. The velocity command to send to the robot, updated at the controller rate
+    ## (~20 Hz) while a task runs and set to zero (active=false) when idle, cancelled,
+    ## failed or tripped by the watchdog. This is the final command after velocity
+    ## smoothing and collision checking. Never apply a value whose stamp is older than
+    ## ~0.5 s.
+    wire CmdVel cmd_vel [readonly]
+
+    ## OUTPUT. Latest global plan (map frame) of the running task, or from the most recent
+    ## compute_path_* call. Empty poses if none.
+    wire Path2D global_plan [readonly]
+
+    ## OUTPUT. Short-horizon trajectory the local controller is currently following
+    ## (map frame). Empty when idle.
+    wire Path2D local_plan [readonly]
+
+    ## OUTPUT. Robot pose in the map frame as used by the stack (~20 Hz). Check
+    ## nav_status.localized before trusting it.
+    wire Pose2D robot_pose [readonly]
+
+    ## OUTPUT. Overall service state (~5 Hz). Read this first when something fails.
+    wire NavStatus nav_status [readonly]
+
+    ## Navigate to a goal pose in the map frame, planning around obstacles and running
+    ## recovery behaviors when stuck. Returns a generator: call Next() repeatedly
+    ## (each call blocks up to ~1 s and returns the latest NavigationFeedback). The last
+    ## item has status complete; then Next() raises StopIteration.
+    ## Errors: Next() raises OperationFailedException with the Nav2 error name and message
+    ## (e.g. goal occupied, no valid path, timeout). Abort() or Close() cancels the goal and
+    ## stops the robot (cmd_vel goes to zero). Starting a new navigation task preempts any
+    ## running one (the old generator then raises OperationAbortedException).
+    ## Precondition: stack_state active and robot localized.
+    function NavigationFeedback{generator} navigate_to_pose(Pose2D goal)
+
+    ## Navigate through several poses in order with one continuous plan, without stopping
+    ## at intermediate poses. Orientation of intermediate poses is mostly ignored.
+    ## 1..100 poses. Same generator semantics as navigate_to_pose.
+    function NavigationFeedback{generator} navigate_through_poses(Pose2D[] poses)
+
+    ## Visit each waypoint in order, navigating to each one as a separate goal (the robot
+    ## stops at each). Waypoints that cannot be reached are skipped and listed in the final
+    ## item's missed_waypoints. 1..100 waypoints. Same generator semantics.
+    function NavigationFeedback{generator} follow_waypoints(Pose2D[] waypoints)
+
+    ## Follow the given path (map frame) with the local controller, without global
+    ## re-planning. Use a path from compute_path_* or one the client built (poses spaced
+    ## <= 0.1 m). Obstacles on the path cause failure rather than detours.
+    ## Same generator semantics.
+    function NavigationFeedback{generator} follow_path(Path2D path)
+
+    ## Rotate in place by target_yaw radians (positive = counter-clockwise; |value| <=
+    ## 2*pi*3) within time_allowance seconds (> 0). Checks for collisions while turning.
+    function BehaviorFeedback{generator} spin(double target_yaw, double time_allowance)
+
+    ## Drive straight backwards distance meters (> 0) at speed m/s (> 0, the value is a
+    ## magnitude) within time_allowance seconds. Stops early if a collision is predicted.
+    function BehaviorFeedback{generator} backup(double distance, double speed, double time_allowance)
+
+    ## Drive straight forward distance meters (> 0) at speed m/s (> 0) along the current
+    ## heading within time_allowance seconds. Stops early if a collision is predicted.
+    function BehaviorFeedback{generator} drive_on_heading(double distance, double speed, double time_allowance)
+
+    ## Hold still (cmd_vel zero) for duration seconds (0 < duration <= 3600). Useful as a
+    ## cancellable pause within a sequence.
+    function BehaviorFeedback{generator} wait(double duration)
+
+    ## PLANNING ONLY - never moves the robot. Compute a collision-free path from the
+    ## robot's current pose to goal (map frame). Also published on global_plan.
+    ## Errors: OperationFailedException with reason (start/goal occupied or outside the
+    ## map, no valid path, timeout). Precondition: stack active and robot localized.
+    function Path2D compute_path_to_pose(Pose2D goal)
+
+    ## PLANNING ONLY. Like compute_path_to_pose but from an explicit start pose instead of
+    ## the robot's current pose (does not require localization). Useful for "how far is
+    ## A from B" questions.
+    function Path2D compute_path_from_pose(Pose2D start, Pose2D goal)
+
+    ## PLANNING ONLY. Compute one continuous path from the robot's current pose through
+    ## all goals in order (1..100 goals).
+    function Path2D compute_path_through_poses(Pose2D[] goals)
+
+    ## Cancel every running task immediately; cmd_vel becomes zero. Safe to call at any
+    ## time, including when idle. Running generators raise OperationAbortedException.
+    function void cancel_all()
+
+    ## Clear obstacles from both costmaps (e.g. after a door opened or a person moved).
+    ## Obstacles still visible to the sensors reappear on the next scan.
+    function void clear_costmaps()
+
+    ## amcl mode only: tell AMCL roughly where the robot is in the map (position error
+    ## < ~1 m, yaw error < ~0.5 rad). Required once after start() in amcl mode.
+    ## In external mode raises InvalidOperationException.
+    function void initialize_localization(Pose2D pose)
+
+    ## Activate the navigation stack with the current configuration. Blocks until active
+    ## (typically 2-10 s). Preconditions (InvalidOperationException listing what is
+    ## missing): map set, odometry streaming, laser scans streaming, and in external mode
+    ## external_pose streaming. From paused, resumes. No-op when already active.
+    function void start()
+
+    ## Cancel running tasks and deactivate the stack (cmd_vel zero). Configuration stays
+    ## locked. start() resumes quickly.
+    function void pause()
+
+    ## Cancel tasks and return the stack to inactive so configuration can be changed or
+    ## an error cleared. Map and input streams are kept.
+    function void reset()
+
+    ## The map (static occupancy grid) used for planning and localization.
+    objref OccupancyMap map
+
+    ## Global costmap: the static map plus inflated obstacles, used by the planner.
+    objref Costmap global_costmap
+
+    ## Local costmap: rolling window around the robot from live sensor data, used by the
+    ## controller.
+    objref Costmap local_costmap
+
+    ## Robot and algorithm parameters. Changes are only allowed while stack_state is
+    ## inactive (call reset() first) and take effect on the next start().
+    objref NavConfiguration configuration
+end
+
+## The static map of the environment, supplied by the client.
+object OccupancyMap
+
+    ## Replace the map. Allowed in any state; while active, the planner and costmaps
+    ## switch to the new map within ~1 s (running tasks continue and re-plan).
+    ## Limits: resolution 0.01..1.0 m, width*height <= 16,000,000 cells, data length must
+    ## equal width*height. Raises InvalidArgumentException on bad input.
+    function void load_map(OccupancyGrid map)
+
+    ## Return the current map. Raises InvalidOperationException if no map was set.
+    function OccupancyGrid read_map()
+
+    ## Metadata of the current map (version 0 = no map yet).
+    property GridInfo info [readonly]
+
+    ## Map cells (same encoding as OccupancyGrid.data), for partial reads of large maps.
+    ## Length width*height (0 if no map).
+    memory int8[] data [readonly]
+
+    ## Fired after the map changes; the argument is the new info.version.
+    event map_changed(uint32 version)
+end
+
+## A costmap maintained by the navigation stack. Cell values are uint8 costs:
+## 0 = free, 1..252 = increasing cost near obstacles (inflation), 253 = inscribed (robot
+## center here would collide), 254 = lethal obstacle, 255 = unknown.
+object Costmap
+
+    ## Metadata of the latest costmap (version 0 = not available yet, e.g. stack inactive).
+    property GridInfo info [readonly]
+
+    ## Latest costmap cells, row-major (index = y*width + x). Length width*height.
+    memory uint8[] data [readonly]
+
+    ## Clear this costmap's obstacle layers.
+    function void clear()
+
+    ## Cost (0..255) of the cell containing the map-frame point (x, y); 255 if outside.
+    function uint8 cost_at(double x, double y)
+end
+
+## Robot geometry, limits and algorithm options. Properties are readable at any time but
+## writable only while the stack is inactive; writing otherwise raises
+## InvalidOperationException. Out-of-range values raise InvalidArgumentException.
+object NavConfiguration
+
+    ## Circular robot radius in meters (0.05..3.0). Used when footprint is empty.
+    ## Default 0.22.
+    property double robot_radius
+
+    ## Polygonal footprint in the robot body frame (3..64 points, meters, counter-
+    ## clockwise). Empty list = use robot_radius. Default empty.
+    property Point2D[] footprint
+
+    ## Maximum forward speed m/s (0.01..5.0). Default 0.5.
+    property double max_linear_velocity
+
+    ## Maximum reverse speed m/s as a magnitude (0..5.0); 0 forbids driving backwards
+    ## during navigation (backup still works). Default 0.0.
+    property double max_reverse_velocity
+
+    ## Maximum yaw rate rad/s (0.05..10.0). Default 1.5.
+    property double max_angular_velocity
+
+    ## Maximum linear acceleration m/s^2 (0.05..10.0). Default 1.0.
+    property double max_linear_acceleration
+
+    ## Maximum angular acceleration rad/s^2 (0.05..20.0). Default 3.0.
+    property double max_angular_acceleration
+
+    ## True for omnidirectional robots (uses linear.y). Default false (differential drive).
+    property bool holonomic
+
+    ## Local controller algorithm. Default mppi.
+    property ControllerType controller
+
+    ## How map localization is obtained. Default external.
+    property LocalizationMode localization_mode
+
+    ## Laser sensor mounting pose in the robot body frame (yaw rad, x/y m). Default 0.
+    property Pose2D laser_mount
+
+    ## Extra clearance kept from obstacles in meters, beyond the robot footprint
+    ## (0..5.0). Default 0.35.
+    property double inflation_radius
+
+    ## Goal reached when within this distance in meters (0.01..2.0). Default 0.25.
+    property double goal_xy_tolerance
+
+    ## Goal reached when within this yaw error in radians (0.01..3.15). Default 0.25.
+    property double goal_yaw_tolerance
+
+    ## Watchdog: odometry older than this many seconds aborts tasks (0.1..5.0).
+    ## Default 0.5.
+    property double odometry_timeout
+
+    ## Watchdog: laser/point-cloud data older than this many seconds aborts tasks
+    ## (0.1..5.0). Default 1.0.
+    property double sensor_timeout
+
+    ## Restore every property to its default. Same state restriction as writes.
+    function void reset_to_defaults()
+
+    ## All properties as a name -> value map (for logging or display).
+    function varvalue{string} describe()
 end
