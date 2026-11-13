@@ -57,6 +57,7 @@ RR_NET_FLAGS=(
     --network=bridge
     -p "$RR_BIND_ADDR:$RR_PORT:$RR_PORT"
     -e "RR_NAV2_PORT=$RR_PORT"
+    -e "RR_NAV2_ROS_LOG_LEVEL=${RR_NAV2_ROS_LOG_LEVEL:-warn}"
 )
 
 # Read-only mounts of the project's runtime dirs (overlay the baked-in copies).

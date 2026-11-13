@@ -21,6 +21,7 @@ from nav2_msgs.action import (BackUp, ComputePathThroughPoses, ComputePathToPose
                               NavigateThroughPoses, NavigateToPose, Spin, Wait)
 from nav2_msgs.msg import Costmap as RosCostmap
 from nav2_msgs.srv import ClearEntireCostmap, ManageLifecycleNodes
+from std_srvs.srv import Trigger
 from nav_msgs.msg import OccupancyGrid as RosGrid
 from nav_msgs.msg import Odometry, Path
 from rclpy.action import ActionClient
@@ -159,6 +160,10 @@ class RosSide:
             "localization": n.create_client(ManageLifecycleNodes,
                                             "/lifecycle_manager_localization/manage_nodes",
                                             callback_group=self.cb),
+        }
+        self.is_active = {
+            m: n.create_client(Trigger, f"/lifecycle_manager_{m}/is_active", callback_group=self.cb)
+            for m in ("navigation", "localization")
         }
         self.clear_srv = {
             "global": n.create_client(ClearEntireCostmap,
@@ -371,9 +376,27 @@ class RosSide:
     def call_service(self, client, request, timeout: float):
         if not client.wait_for_service(timeout_sec=min(timeout, 5.0)):
             raise TimeoutError(f"service {client.srv_name} not available")
-        return self.wait_future(client.call_async(request), timeout)
+        try:
+            return self.wait_future(client.call_async(request), timeout)
+        except TimeoutError:
+            raise TimeoutError(f"service {client.srv_name} did not answer within {timeout:g} s")
+
+    def wait_manager_ready(self, manager: str, timeout: float = 30.0):
+        """Round-trip the manager's is_active service. wait_for_service() can return before
+        DDS has matched the request reader, and a request sent then is silently lost."""
+        deadline = time.monotonic() + timeout
+        client = self.is_active[manager]
+        while time.monotonic() < deadline:
+            if client.wait_for_service(timeout_sec=1.0):
+                try:
+                    self.wait_future(client.call_async(Trigger.Request()), 1.0)
+                    return
+                except TimeoutError:
+                    pass
+        raise TimeoutError(f"lifecycle manager '{manager}' not reachable within {timeout:g} s")
 
     def lifecycle(self, manager: str, command: int, timeout: float = 90.0) -> bool:
+        self.wait_manager_ready(manager)
         req = ManageLifecycleNodes.Request()
         req.command = command
         return bool(self.call_service(self.manage[manager], req, timeout).success)

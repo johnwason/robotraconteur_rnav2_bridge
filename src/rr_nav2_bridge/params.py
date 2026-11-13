@@ -104,7 +104,7 @@ def _footprint_str(pts) -> str:
     return "[" + ", ".join(f"[{x:.4f}, {y:.4f}]" for x, y in pts) + "]"
 
 
-def render_params(cfg: NavConfig) -> dict:
+def render_params(cfg: NavConfig, initial_pose=None) -> dict:
     """Return the full Nav2 parameter dict for this configuration."""
     p = copy.deepcopy(_load("nav2_params.yaml"))
     ctrl = copy.deepcopy(_load(f"controller_{cfg.controller}.yaml"))["FollowPath"]
@@ -162,11 +162,15 @@ def render_params(cfg: NavConfig) -> dict:
     am = p["amcl"]["ros__parameters"]
     am["robot_model_type"] = ("nav2_amcl::OmniMotionModel" if cfg.holonomic
                               else "nav2_amcl::DifferentialMotionModel")
+    if initial_pose is not None:
+        x, y, yaw = initial_pose
+        am["set_initial_pose"] = True
+        am["initial_pose"] = {"x": float(x), "y": float(y), "z": 0.0, "yaw": float(yaw)}
     return p
 
 
-def write_params(cfg: NavConfig, path: str) -> str:
+def write_params(cfg: NavConfig, path: str, initial_pose=None) -> str:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
-        yaml.safe_dump(render_params(cfg), f, sort_keys=False)
+        yaml.safe_dump(render_params(cfg, initial_pose), f, sort_keys=False)
     return path

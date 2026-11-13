@@ -25,7 +25,7 @@ class InputError(ValueError):
     """Client sent invalid data (maps to InvalidArgumentException)."""
 
 
-class StateError(RuntimeError):
+class StateError(Exception):
     """Call not allowed in the current state (maps to InvalidOperationException)."""
 
 
@@ -147,3 +147,136 @@ class BridgeCore:
             except Exception:
                 log.exception("map listener failed")
         return version
+
+
+# ---------------------------------------------------------------------------- lifecycle
+import os  # noqa: E402
+
+from .nav2_process import Nav2Process  # noqa: E402
+from .params import write_params  # noqa: E402
+
+RUNTIME_DIR = os.environ.get("RR_NAV2_RUNTIME_DIR", "/tmp/rr_nav2")
+STARTUP, PAUSE, RESUME, RESET, SHUTDOWN = 0, 1, 2, 3, 4
+EXT_POSE_TIMEOUT = 1.0
+
+
+class Lifecycle:
+    """start()/pause()/reset() of the Nav2 stack. One lifecycle call at a time."""
+
+    def __init__(self, core: BridgeCore):
+        self.core = core
+        self.proc = Nav2Process()
+        self._busy = threading.Lock()
+        self.cancel_all = lambda: None  # replaced by the task manager
+        self._mon = threading.Thread(target=self._monitor, name="nav2-monitor", daemon=True)
+        self._mon.start()
+
+    def _set(self, state, message):
+        with self.core.lock:
+            self.core.state = state
+            self.core.message = message
+        log.info("stack %s: %s", state, message)
+
+    def missing_preconditions(self) -> list:
+        c, cfg = self.core, self.core.config
+        ages = c.ros.input_ages()
+        missing = []
+        if c.map.version == 0:
+            missing.append("no map loaded (call map.load_map())")
+        if ages["odometry"] > cfg.odometry_timeout:
+            missing.append("odometry not streaming")
+        if ages["sensors"] > cfg.sensor_timeout:
+            missing.append("laser_scan_in (or point_cloud_in) not streaming")
+        if cfg.localization_mode == "external" and ages["external_pose"] > EXT_POSE_TIMEOUT:
+            missing.append("external_pose not streaming (localization_mode is external)")
+        if cfg.localization_mode == "amcl" and c.initial_pose is None:
+            missing.append("initialize_localization() not called (localization_mode is amcl)")
+        return missing
+
+    def start(self):
+        if not self._busy.acquire(blocking=False):
+            raise StateError("another start()/pause()/reset() is in progress")
+        try:
+            state = self.core.state
+            if state == "active":
+                return
+            if state == "error":
+                raise StateError(f"stack is in error state ({self.core.message}); call reset() first")
+            if state == "paused":
+                if not self.core.ros.lifecycle("navigation", RESUME, 60.0):
+                    self._set("error", "resume failed")
+                    raise RuntimeError("resume failed")
+                self._set("active", "active")
+                return
+            missing = self.missing_preconditions()
+            if missing:
+                raise StateError("cannot start: " + "; ".join(missing))
+            self._activate()
+        finally:
+            self._busy.release()
+
+    def _activate(self):
+        c, cfg = self.core, self.core.config
+        self._set("activating", "starting navigation stack")
+        try:
+            c.ros.set_laser_mount(*cfg.laser_mount)
+            amcl = cfg.localization_mode == "amcl"
+            with c.ros._lock:
+                c.ros.publish_map_to_odom = not amcl
+                if amcl:
+                    c.ros.map_to_odom = None
+            params = write_params(cfg, os.path.join(RUNTIME_DIR, "nav2_params.yaml"),
+                                  c.initial_pose if amcl else None)
+            self.proc.launch(params, amcl, os.environ.get("RR_NAV2_ROS_LOG_LEVEL", "warn"))
+            for mgr in (["localization"] if amcl else []) + ["navigation"]:
+                ok = c.ros.lifecycle(mgr, STARTUP, timeout=45.0)
+                if not ok or not self.proc.alive():
+                    raise RuntimeError(f"{mgr} startup failed")
+            # Wait for the action servers the RR members rely on.
+            for name in ("navigate_to_pose", "compute_path_to_pose", "follow_path"):
+                if not c.ros.actions[name].wait_for_server(timeout_sec=20.0):
+                    raise RuntimeError(f"action server {name} did not come up")
+            self._set("active", "active")
+        except Exception as e:
+            detail = self.proc.tail(3)
+            self.proc.stop()
+            msg = f"start failed: {e}" + (f" | nav2 log: {detail}" if detail else "")
+            self._set("error", msg)
+            raise RuntimeError(msg) from None
+
+    def pause(self):
+        if not self._busy.acquire(blocking=False):
+            raise StateError("another start()/pause()/reset() is in progress")
+        try:
+            if self.core.state != "active":
+                raise StateError(f"pause() requires state active (state is {self.core.state})")
+            self.cancel_all()
+            if not self.core.ros.lifecycle("navigation", PAUSE, 60.0):
+                self._set("error", "pause failed")
+                raise RuntimeError("pause failed")
+            self._set("paused", "paused: call start() to resume")
+        finally:
+            self._busy.release()
+
+    def reset(self):
+        with self._busy:
+            self.cancel_all()
+            self.proc.stop()
+            with self.core.ros._lock:
+                self.core.ros.costmaps = {"global": None, "local": None}
+                self.core.ros.cmd_vel = None
+                self.core.ros.global_plan = self.core.ros.local_plan = None
+            self._set("inactive", "inactive: configuration may be changed; call start()")
+
+    def shutdown(self):
+        self.cancel_all()
+        self.proc.stop(timeout=5.0)
+
+    def _monitor(self):
+        while True:
+            time.sleep(1.0)
+            if self.core.state in ("active", "paused") and not self.proc.alive():
+                code = self.proc.exit_code()
+                self.cancel_all()
+                self._set("error", f"navigation stack exited unexpectedly (code {code}); "
+                                   f"call reset() then start()")
