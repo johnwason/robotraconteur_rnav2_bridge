@@ -37,6 +37,7 @@ fi
 # Flags applied to every container run.
 HARDENED_RUN_FLAGS=(
     --label "$PROJECT_LABEL"
+    --init
     --cap-drop=ALL
     --security-opt=no-new-privileges
     --read-only
