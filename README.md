@@ -8,7 +8,24 @@ inside the container: only the RR TCP port is published.
 laser scans (optionally point clouds) and a map in over RR, and reads plans and
 `cmd_vel` out. The client decides whether to forward `cmd_vel` to its motors.
 
-Status: working prototype on branch `dev/prototype`; all smoke and hardening tests pass.
+> **⚠️ AI-generated experiment: untested on real hardware. Do not use it to drive a real robot.**
+>
+> - The code, configuration, tests and docs were written by an AI coding agent
+>   (Claude Code, Claude Opus 5.5) in one session in November 2026, working from a
+>   human-written plan ([HANDOFF.md](HANDOFF.md), [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)).
+>   No human has reviewed the code line by line.
+> - "Tested" here means only the automated tests in `tests/`. They run against a
+>   simulated robot ([`tests/fake_robot.py`](tests/fake_robot.py)): a simple unicycle
+>   model with a perfect ray-cast laser on one small test map. Nothing has been tried
+>   with real robots, real sensor noise, real odometry drift or real network conditions.
+> - TLS has not been tested (it needs an RR-issued node certificate). The Quadlet unit
+>   was validated only with Podman's dry-run check, not installed or run.
+> - The bridge is not a safety-rated component. Its watchdog and the Nav2 collision
+>   monitor are no substitute for a robot's own emergency stop and low-level limits.
+> - Known deviations from the plan and open issues are listed in
+>   [HANDOFF.md §9](HANDOFF.md#9-implementation-notes-deviations-and-findings-2026-11-13).
+
+Status: experimental prototype; the automated smoke and hardening tests pass in simulation.
 
 ## Quick start
 
