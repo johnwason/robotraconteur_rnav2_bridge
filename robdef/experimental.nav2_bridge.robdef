@@ -389,7 +389,7 @@ object OccupancyMap
 
     ## Replace the map. Allowed in any state; while active, the planner and costmaps
     ## switch to the new map within ~1 s (running tasks continue and re-plan).
-    ## Limits: resolution 0.01..1.0 m, width*height <= 16,000,000 cells, data length must
+    ## Limits: resolution 0.01..1.0 m, width*height <= 10,000,000 cells, data length must
     ## equal width*height. Raises InvalidArgumentException on bad input.
     function void load_map(OccupancyGrid map)
 

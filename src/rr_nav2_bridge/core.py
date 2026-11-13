@@ -16,7 +16,7 @@ log = logging.getLogger("rr_nav2_bridge.core")
 # Input size caps (protect the container from bad clients).
 MAX_SCAN_RANGES = 10000
 MAX_CLOUD_POINTS = 200000
-MAX_MAP_CELLS = 16_000_000
+MAX_MAP_CELLS = 10_000_000  # keeps load_map() under the RR message size limit
 MAX_COORD = 1.0e6          # |x|, |y| in meters for any pose
 MAX_SPEED_IN = 100.0       # odometry velocity sanity bound
 
