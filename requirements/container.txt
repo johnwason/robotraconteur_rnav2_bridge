@@ -1,0 +1,15 @@
+# Container venv (--system-site-packages; numpy/yaml/lxml come from apt).
+# Install with: pip install --require-hashes --no-deps -r requirements/container.txt
+general_robotics_toolbox==0.7.3 \
+    --hash=sha256:047f61e4488b5d4f54ce6f7a8e056989b1872644152eb3769be71a11b7836521 \
+    --hash=sha256:d4937598add6eed3685a238b4b7618801fa32c578012f57d22189e28d17446aa
+importlib_resources==7.1.0 \
+    --hash=sha256:1bd7b48b4088eddb2cd16382150bb515af0bd2c70128194392725f82ad2c96a1 \
+    --hash=sha256:0722d4c6212489c530f2a145a34c0a7a3b4721bc96a15fada5930e2a0b760708
+robotraconteur==1.2.9 \
+    --hash=sha256:b15b27e8d55f5f97728bab58d851c498d7b628753cfa50cfc46ae7ca176af173 \
+    --hash=sha256:8089a496cb1a8453cb2bace3b5bf99802a476f2d8c1fad4679e994686f1d9aa3
+RobotRaconteurCompanion==0.4.0 \
+    --hash=sha256:62001c9a8d073fb95bae2ac5e47542d1c946ceb2c19c23dfcdbfd4dd2653b20c
+urdf_parser_py==0.0.4 \
+    --hash=sha256:e983f637145fded67bcff6a542302069bb975b2edf1b18318c093abba1b794cc
