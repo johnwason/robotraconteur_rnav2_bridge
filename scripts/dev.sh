@@ -8,6 +8,7 @@ TTY=()
 # Same as RO_SOURCE_MOUNTS, but src/ is read-write.
 DEV_MOUNTS=("${RO_SOURCE_MOUNTS[@]/src:ro,Z/src:rw,Z}")
 [[ -t 0 ]] && TTY=(-it)
+[[ "${RR_NAV2_DETACH:-}" == "1" ]] && TTY=(-d)
 
 exec podman run --rm "${TTY[@]}" --name "$DEV_NAME" \
     "${HARDENED_RUN_FLAGS[@]}" "${RR_NET_FLAGS[@]}" \

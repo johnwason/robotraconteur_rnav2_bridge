@@ -21,6 +21,7 @@
 ##     so client/service clock skew does not matter.
 ##
 ## Expected call order:
+##   0. documentation("") returns this text; documentation("<member>") one entry.
 ##   1. configuration: set robot_radius/footprint, velocity limits, localization_mode
 ##      (only allowed while the stack is inactive).
 ##   2. map.load_map(grid).
@@ -82,7 +83,8 @@ enum LocalizationMode
     ## (e.g. from its own SLAM, motion capture or simulation). Default.
     external = 0,
     ## The service runs AMCL particle-filter localization against the map using
-    ## laser_scan_in. Call initialize_localization() once after start().
+    ## laser_scan_in. Call initialize_localization() before start() (and again any time
+    ## to re-localize).
     amcl = 1
 end
 
@@ -229,6 +231,13 @@ end
 ## Root object. Connect with rr+tcp://<host>:62354?service=nav2
 object Nav2Navigator
 
+    ## START HERE. Returns documentation as text. name = "" returns the complete service
+    ## definition with all usage notes (units, frames, call order, errors). name = a
+    ## member ("navigate_to_pose"), a qualified member ("map.load_map",
+    ## "configuration.robot_radius") or a type ("NavStatus") returns just that entry.
+    ## Exists because Robot Raconteur does not transmit definition comments to clients.
+    function string documentation(string name)
+
     ## INPUT. Stream the robot's odometry here continuously (>= 10 Hz recommended).
     ## Pose is in the client's odom frame and must not jump. Required before start().
     ## Rejected (ignored with nav_status.message set) if any value is NaN/Inf.
@@ -340,14 +349,16 @@ object Nav2Navigator
     function void clear_costmaps()
 
     ## amcl mode only: tell AMCL roughly where the robot is in the map (position error
-    ## < ~1 m, yaw error < ~0.5 rad). Required once after start() in amcl mode.
-    ## In external mode raises InvalidOperationException.
+    ## < ~1 m, yaw error < ~0.5 rad). Required before start() in amcl mode; may be called
+    ## again while active to re-localize. In external mode raises
+    ## InvalidOperationException.
     function void initialize_localization(Pose2D pose)
 
     ## Activate the navigation stack with the current configuration. Blocks until active
     ## (typically 2-10 s). Preconditions (InvalidOperationException listing what is
     ## missing): map set, odometry streaming, laser scans streaming, and in external mode
-    ## external_pose streaming. From paused, resumes. No-op when already active.
+    ## external_pose streaming, in amcl mode initialize_localization() called. From
+    ## paused, resumes. No-op when already active.
     function void start()
 
     ## Cancel running tasks and deactivate the stack (cmd_vel zero). Configuration stays
