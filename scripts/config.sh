@@ -29,8 +29,26 @@ if [[ -f "$PROJECT_ROOT/scripts/local.env" ]]; then
     source "$PROJECT_ROOT/scripts/local.env"
 fi
 
-if [[ "$RR_BIND_ADDR" != "127.0.0.1" && "${RR_NAV2_ALLOW_NONLOCAL:-}" != "yes-with-tls" ]]; then
-    echo "Refusing to bind RR port to $RR_BIND_ADDR without RR_NAV2_ALLOW_NONLOCAL=yes-with-tls" >&2
+# Optional security (see docs/usage.md): secrets live in a git-ignored directory and are
+# mounted read-only. RR_NAV2_AUTH=1 -> users.txt; RR_NAV2_TLS=1 -> tls/ holds the node
+# certificate for RR_NAV2_NODE_ID (mounted as the RR certificate store).
+SECRETS_DIR="${RR_NAV2_SECRETS_DIR:-$PROJECT_ROOT/certs}"
+SECURITY_FLAGS=()
+if [[ "${RR_NAV2_AUTH:-}" == "1" ]]; then
+    [[ -s "$SECRETS_DIR/users.txt" ]] || { echo "RR_NAV2_AUTH=1 needs $SECRETS_DIR/users.txt (scripts/add_user.sh)" >&2; exit 1; }
+    SECURITY_FLAGS+=(-v "$SECRETS_DIR/users.txt:/opt/rr_nav2/secrets/users.txt:ro,Z" -e RR_NAV2_AUTH=1)
+fi
+if [[ "${RR_NAV2_TLS:-}" == "1" ]]; then
+    [[ -n "${RR_NAV2_NODE_ID:-}" && -d "$SECRETS_DIR/tls" ]] || { echo "RR_NAV2_TLS=1 needs RR_NAV2_NODE_ID and $SECRETS_DIR/tls/" >&2; exit 1; }
+    SECURITY_FLAGS+=(-v "$SECRETS_DIR/tls:/home/nav/.local/share/RobotRaconteur/certificates:ro,Z"
+                     -e RR_NAV2_TLS=1 -e "RR_NAV2_NODE_ID=$RR_NAV2_NODE_ID")
+elif [[ -n "${RR_NAV2_NODE_ID:-}" ]]; then
+    SECURITY_FLAGS+=(-e "RR_NAV2_NODE_ID=$RR_NAV2_NODE_ID")
+fi
+
+# Binding beyond loopback requires both TLS and authentication.
+if [[ "$RR_BIND_ADDR" != "127.0.0.1" && ( "${RR_NAV2_TLS:-}" != "1" || "${RR_NAV2_AUTH:-}" != "1" ) ]]; then
+    echo "Refusing to bind the RR port to $RR_BIND_ADDR without RR_NAV2_TLS=1 and RR_NAV2_AUTH=1" >&2
     exit 1
 fi
 
@@ -58,6 +76,7 @@ RR_NET_FLAGS=(
     -p "$RR_BIND_ADDR:$RR_PORT:$RR_PORT"
     -e "RR_NAV2_PORT=$RR_PORT"
     -e "RR_NAV2_ROS_LOG_LEVEL=${RR_NAV2_ROS_LOG_LEVEL:-warn}"
+    "${SECURITY_FLAGS[@]}"
 )
 
 # Read-only mounts of the project's runtime dirs (overlay the baked-in copies).
