@@ -1,6 +1,6 @@
 # Handoff: Robot Raconteur frontend for ROS 2 Nav2
 
-**Status (2026-11-13):** planning complete, no code written. This directory holds only this file and is **not yet a git repository**. Next step: Phase 0, commit 1.
+**Status (2026-11-13):** all 30 plan steps implemented on branch `dev/prototype`; smoke (12) and hardening (6) tests pass against the hardened container. `main` is untouched pending the user's approval to merge. See §9 for what changed relative to this plan.
 
 ---
 
@@ -162,3 +162,47 @@ Candidate standard types (**verify against the standard robdef repo first** — 
 - RR UDP multicast discovery won't cross the published-port boundary. Clients connect by URL; document this prominently.
 - Fast DDS shared memory isn't an issue because everything ROS runs inside one container. Keep it that way.
 - If the project later moves to Lyrical (LTS, May 2026), expect only base-image and Nav2 API changes; the RR interface should remain stable.
+
+## 9. Implementation notes (deviations and findings, 2026-11-13)
+
+- **`nav2_route` exists in Jazzy 1.3.13** (§3 said it does not). Still out of scope.
+- **Docstrings are not transmitted by RR 1.2.9.** Service definitions reach clients
+  re-serialized without `##` comments. The root object adds `documentation(name)`, which
+  serves the original robdef text or a single entry. Likely worth raising upstream.
+- **RR reserves `set_`/`get_` member prefixes.** Renamed: `set_map` → `map.load_map`,
+  `set_initial_pose` → `initialize_localization`, plus `read_map`, `cost_at`, `describe`.
+- **Executor:** `SingleThreadedExecutor`, not `MultiThreadedExecutor`. The multithreaded
+  executor used about 109% of a core (GIL-bound) just for input streaming, which slowed
+  Nav2's control loop and caused dropped DDS responses. Single-threaded: 11% streaming,
+  20% navigating; the full navigation test went from 130 s to 32 s.
+- **Nav2 runs as a subprocess launched on `start()`** and is torn down on `reset()`, so
+  controller type and localization mode can change. Lifecycle autostart stays off.
+  `start()` sends `STARTUP` only after an `is_active` round-trip, because a request sent
+  right after `wait_for_service()` can be lost before DDS matching completes.
+- **TF timing:** `odom→base_link` is re-published at 50 Hz, future-dated by 50 ms;
+  `map→odom` (external mode) by 100 ms. Sensor data is stamped on arrival. Without this,
+  the controller hit "extrapolation into the future" errors.
+- **AMCL:** `initialize_localization()` must be called *before* `start()` in amcl mode
+  (the global costmap cannot activate until AMCL publishes `map→odom`).
+- **Velocity smoother** allows reverse up to the forward limit, so `backup()` works when
+  `max_reverse_velocity` is 0 (the controller keeps its own reverse limit).
+- **Map size cap is 10 M cells** (not 16 M), to stay under RR's default message size.
+- **Fast DDS:** loopback + SHM profile. Fast DDS still opens one ephemeral *send* socket
+  per interface; `verify_isolation.sh` allows those but fails on any non-loopback DDS
+  receive port. An SHM-only profile made Fast DDS fall back to builtin UDP on 0.0.0.0.
+- **RR auth** uses the MD5 password file (`PasswordFileUserAuthenticator`); a users-file
+  line without a privileges column fails with a raw `vector::_M_range_check` error.
+  **RR TLS** needs an RR-issued node certificate, so it is implemented with a fail-fast
+  check but a TLS session was not tested.
+- **Client reconnects:** right after a session to the same service disconnects, a new
+  session sometimes lost its transport while attaching members ("Transport connection
+  to remote host not found"). The fake robot retries the whole connect sequence.
+
+### Open questions resolved by default (user may revisit)
+
+| Question | Default used |
+|---|---|
+| RR port | 62354 (`RR_NAV2_PORT`) |
+| Default controller | MPPI; DWB through `configuration.controller` (both tested) |
+| TLS default | off (loopback only); non-loopback binding requires TLS + auth |
+| Sensors | 2D laser required; point cloud input implemented and tested (cloud-only obstacle avoided) |

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
 import time
 
 import numpy as np
 
-from .params import NavConfig
+from .nav2_process import Nav2Process
+from .params import NavConfig, write_params
 
 log = logging.getLogger("rr_nav2_bridge.core")
 
@@ -150,10 +152,6 @@ class BridgeCore:
 
 
 # ---------------------------------------------------------------------------- lifecycle
-import os  # noqa: E402
-
-from .nav2_process import Nav2Process  # noqa: E402
-from .params import write_params  # noqa: E402
 
 RUNTIME_DIR = os.environ.get("RR_NAV2_RUNTIME_DIR", "/tmp/rr_nav2")
 STARTUP, PAUSE, RESUME, RESET, SHUTDOWN = 0, 1, 2, 3, 4

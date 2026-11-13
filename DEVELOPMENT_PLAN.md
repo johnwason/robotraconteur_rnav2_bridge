@@ -3,7 +3,7 @@
 Companion to [HANDOFF.md](HANDOFF.md), which records the design decisions and architecture. This file covers **how** the work gets done safely on the development machine.
 
 - **Target:** ROS 2 Jazzy (LTS) · Python prototype · rootless Podman · small commits
-- **Status:** not started. No code yet; the directory is not yet a git repo.
+- **Status:** all phases implemented on `dev/prototype` (2026-11-13). Deviations and findings are in [HANDOFF.md §9](HANDOFF.md).
 
 ---
 
